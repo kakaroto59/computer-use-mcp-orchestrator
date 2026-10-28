@@ -1,0 +1,16 @@
+[package]
+name = "actuator_core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "actuator_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py310"] }
+enigo = "0.3"
+xcap = "0.0.14"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+base64 = "0.22"
+windows = { version = "0.62.2", features = ["Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging"] }

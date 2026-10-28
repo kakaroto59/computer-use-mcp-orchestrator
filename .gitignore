@@ -1,0 +1,12 @@
+# Rust
+actuator_core/target/
+**/*.rs.bk
+
+# Python
+mcp_daemon/venv/
+**/__pycache__/
+*.pyc
+
+# Environment & Temp
+.env
+*.tmp

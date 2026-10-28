@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "computer-use-actuator": {
+      "command": "c:\\Users\\Joao\\Documents\\antigravity\\hopeful-hertz\\mcp_daemon\\venv\\Scripts\\python.exe",
+      "args": ["-m", "mcp_daemon.server"],
+      "env": {
+        "PYTHONPATH": "c:\\Users\\Joao\\Documents\\antigravity\\hopeful-hertz"
+      }
+    }
+  }
+}
