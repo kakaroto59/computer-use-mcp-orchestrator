@@ -11,7 +11,9 @@ use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
     ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, RGBQUAD, SRCCOPY,
 };
-use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::System::Threading::{
+    AttachThreadInput, GetCurrentProcess, GetCurrentThreadId, SetPriorityClass, HIGH_PRIORITY_CLASS,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetAncestor, GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId,
     SetForegroundWindow, WindowFromPoint, GA_ROOT, SM_CXSCREEN, SM_CYSCREEN,
@@ -172,23 +174,36 @@ fn capture_screen_gdi() -> Result<image::RgbaImage, String> {
     }
 }
 
-#[pyfunction]
-#[pyo3(signature = (format = "jpeg", quality = 80))]
-fn get_screenshot(format: &str, quality: u8) -> PyResult<String> {
-    let img = capture_screen_gdi().map_err(PyRuntimeError::new_err)?;
-    
+fn encode_screenshot_bytes(format: &str, quality: u8) -> Result<Vec<u8>, String> {
+    let img = capture_screen_gdi()?;
     let mut buffer = Cursor::new(Vec::new());
     if format.eq_ignore_ascii_case("jpeg") || format.eq_ignore_ascii_case("jpg") {
         let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, quality);
-        encoder
-            .encode_image(&img)
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        encoder.encode_image(&img).map_err(|e| e.to_string())?;
     } else {
         img.write_to(&mut buffer, ImageFormat::Png)
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            .map_err(|e| e.to_string())?;
     }
+    Ok(buffer.into_inner())
+}
 
-    Ok(BASE64_STANDARD.encode(buffer.into_inner()))
+#[pyfunction]
+#[pyo3(signature = (format = "jpeg", quality = 80))]
+fn get_screenshot(py: Python<'_>, format: &str, quality: u8) -> PyResult<String> {
+    let fmt = format.to_string();
+    py.allow_threads(move || {
+        let bytes = encode_screenshot_bytes(&fmt, quality).map_err(PyRuntimeError::new_err)?;
+        Ok(BASE64_STANDARD.encode(bytes))
+    })
+}
+
+#[pyfunction]
+#[pyo3(signature = (format = "jpeg", quality = 80))]
+fn get_screenshot_raw(py: Python<'_>, format: &str, quality: u8) -> PyResult<Vec<u8>> {
+    let fmt = format.to_string();
+    py.allow_threads(move || {
+        encode_screenshot_bytes(&fmt, quality).map_err(PyRuntimeError::new_err)
+    })
 }
 
 #[pyfunction]
@@ -327,7 +342,11 @@ fn hotkey(keys: Vec<String>) -> PyResult<()> {
 
 #[pymodule]
 fn actuator_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    unsafe {
+        let _ = SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+    }
     m.add_function(wrap_pyfunction!(get_screenshot, m)?)?;
+    m.add_function(wrap_pyfunction!(get_screenshot_raw, m)?)?;
     m.add_function(wrap_pyfunction!(get_screen_dimensions, m)?)?;
     m.add_function(wrap_pyfunction!(click_at, m)?)?;
     m.add_function(wrap_pyfunction!(mouse_move, m)?)?;
