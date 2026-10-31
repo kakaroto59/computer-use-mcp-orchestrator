@@ -1,23 +1,52 @@
-# Orquestrador Computer Use (Antigravity + Gemini + MCP)
+# Orquestrador Computer Use Híbrido (Rust + Python MCP)
 
-Arquitetura de alto desempenho para automação de interface (*Computer Use*) unindo um atuador nativo de baixo nível em **Rust** a um servidor de contexto em **Python** utilizando o padrão **Model Context Protocol (MCP)**.
+Arquitetura de alto desempenho para automação de interface gráfica (*Computer Use*) no Windows, combinando um motor nativo de baixo nível em **Rust (`actuator_core`)** a um servidor de contexto assíncrono em **Python (`mcp_daemon`)** sob o padrão **Model Context Protocol (MCP)**.
+
+---
+
+## Principais Funcionalidades e Otimizações
+
+- **Motor Nativo Win32 GDI + Enigo (`actuator_core`)**:
+  - Captura de tela direta via `BitBlt` + `GetDIBits` com conversão BGRA $\to$ RGBA otimizada em modo `--release`.
+  - **GIL-Free Execution**: Liberação do Global Interpreter Lock do Python (`py.allow_threads`) durante a captura de tela e codificação de imagem.
+  - **Prioridade de Tempo Real (`HIGH_PRIORITY_CLASS`)**: Elevação automática da prioridade do processo no agendador do Windows via `SetPriorityClass`.
+  - **Bypass de Isolamento de Desktop (`ensure_input_desktop`)**: Vinculação automática do thread ao desktop interativo ativo (`OpenInputDesktop` + `SetThreadDesktop`) e consciência nativa de DPI (`SetProcessDPIAware()`), garantindo mapeamento físico $1:1$ (`1920x1080`).
+  - **Focus Guard (`focus_guard`)**: Acoplamento de fila de input Win32 (`AttachThreadInput` + `SetForegroundWindow` + `BringWindowToTop` + `SetFocus`) imediatamente antes de eventos de mouse e teclado para evitar perda silenciosa de foco.
+
+- **Daemon MCP Otimizado para LLMs (`mcp_daemon`)**:
+  - **Coordenadas Relativas Normalizadas (`[0.0, 1.0]`)**: Elimina erros de escala de resolução exigindo `x_rel` e `y_rel` no intervalo estrito `[0.0, 1.0]`, convertidos dinamicamente para pixels físicos da tela ativa.
+  - **Pipeline Visual de Baixo Consumo de Tokens (`process_screenshot_for_llm`)**: Redimensionamento proporcional `LANCZOS` (limite máximo `1024x1024`), conversão para escala de cinza 8-bit (`"L"`) e compressão JPEG (`quality=60, optimize=True`).
+  - **Latência Adaptativa**: Tempos de espera pós-ação calibrados por operação (`50 ms` move, `120 ms` digitação, `250 ms` clique, `650 ms` abertura de menus do sistema).
+  - **Schemas MCP Minificados**: Docstrings e descrições Pydantic compactadas para reduzir o overhead fixo de tokens em cada turno.
+
+---
+
+## Benchmarks de Performance (1920x1080)
+
+| Métrica | Baseline Inicial (`dev` RGB) | Pós-Otimização (`--release` + Grayscale 1024px) | Ganho / Redução |
+| :--- | :---: | :---: | :---: |
+| **Latência de Captura Nativa (Rust)** | `940.73 ms` | **`140.36 ms`** | **-85.1% ($6.7\times$ mais rápido)** |
+| **Latência Total Fim-a-Fim (Captura + LLM Pipeline)** | `940.73 ms` | **`253.46 ms`** | **-73.1% ($3.7\times$ mais rápido)** |
+| **Tamanho do Payload Visual (Base64)** | `197.88 KB` | **`49.93 KB`** | **-74.8% de tráfego/tokens** |
+| **Tamanho do Schema JSON MCP (7 Tools)** | `5.419 bytes` | **`3.400 bytes`** | **-37.3% de overhead fixo** |
 
 ---
 
 ## Estrutura do Projeto
 
 ```text
-├── actuator_core/                 # Módulo de baixo nível em Rust
-│   ├── Cargo.toml                 # Dependências (pyo3, enigo, windows GDI, image)
+├── actuator_core/                         # Módulo nativo em Rust (PyO3 + maturin)
+│   ├── Cargo.toml                         # Dependências (pyo3, enigo, windows GDI/Win32, image)
 │   └── src/
-│       └── lib.rs                 # Win32 GDI capture + input dispatch + Input Desktop attach
-├── mcp_daemon/                    # Servidor de contexto MCP em Python
-│   ├── venv/                      # Ambiente virtual isolado (Python 3.14)
-│   ├── requirements.txt           # mcp, maturin, pydantic, Pillow, numpy
+│       └── lib.rs                         # GDI capture, GIL release, Focus Guard, Input Desktop attach
+├── mcp_daemon/                            # Servidor Model Context Protocol em Python
+│   ├── requirements.txt                   # mcp, maturin, pydantic, Pillow, numpy
 │   ├── __init__.py
-│   └── server.py                  # Servidor MCP stdio com ciclo de feedback visual
-├── antigravity_mcp_config.json    # Configuração do MCP para o Antigravity / Gemini
-├── test_actuator.py               # Suíte de validação integrada
+│   └── server.py                          # Servidor MCP stdio, coordenadas [0.0, 1.0] e pipeline LANCZOS
+├── antigravity_mcp_config.json            # Configuração do servidor MCP para o cliente LLM
+├── test_actuator.py                       # Suíte de testes de integração e benchmark
+├── relatorio_execucao_orquestrador_mcp.md # Relatório técnico do teste E2E e RCA inicial
+├── relatorio_de_otimizacao.md             # Relatório de benchmarks pós-otimização
 └── README.md
 ```
 
@@ -25,37 +54,33 @@ Arquitetura de alto desempenho para automação de interface (*Computer Use*) un
 
 ## Ferramentas MCP Expostas (`tools`)
 
-Todas as ferramentas de atuação disparam o ciclo de feedback visual automático (execução da ação $\to$ latência de renderização do SO $\to$ captura e validação visual em base64):
+Todas as ferramentas de atuação executam o ciclo de feedback visual fechado (ação $\to$ estabilização adaptativa $\to$ captura otimizada em Base64):
 
-1. **`capture_screen`**: Captura o estado atual da tela em JPEG/PNG otimizado.
-2. **`execute_click`**: Move o cursor e clica nas coordenadas `(x, y)` (`left`, `right`, `middle`).
-3. **`execute_type`**: Digita strings de texto no elemento em foco com opção `press_enter`.
-4. **`execute_press_key`**: Aciona teclas individuais (`enter`, `tab`, `backspace`, `escape`, setas direcionais, etc.).
-5. **`execute_hotkey`**: Executa atalhos de teclado combinados (ex: `["win", "r"]`, `["ctrl", "c"]`).
+1. **`capture_screen`**: Captura a tela otimizada (JPEG 1024px Grayscale em Base64) e retorna a resolução física `(width, height)`.
+2. **`execute_click`**: Move o cursor e clica nas coordenadas relativas `(x_rel, y_rel)` $\in [0.0, 1.0]$ (`left`, `right`, `middle`, simples ou duplo).
+3. **`execute_type`**: Digita texto no elemento em foco (protegido por `focus_guard`) com suporte a `press_enter`.
+4. **`execute_press_key`**: Pressiona tecla única (`enter`, `tab`, `esc`, `backspace`, `win`, setas, `f1`–`f12`).
+5. **`execute_hotkey`**: Dispara atalho combinado (ex.: `["win", "r"]`, `["ctrl", "c"]`, `["alt", "f4"]`).
 6. **`execute_scroll`**: Rola a roda do mouse (`up`, `down`, `left`, `right`).
-7. **`execute_move`**: Move o cursor sem clicar.
+7. **`execute_move`**: Move o cursor para `(x_rel, y_rel)` $\in [0.0, 1.0]$ sem clicar.
 
 ---
 
-## Como Executar
+## Compilação e Execução
 
-### 1. Teste de Integração Direto
+### 1. Compilar o Módulo Nativo Rust (Modo Release)
+```powershell
+.\mcp_daemon\venv\Scripts\maturin.exe develop --release --manifest-path .\actuator_core\Cargo.toml
+```
+
+### 2. Executar a Suíte de Testes e Benchmarks
 ```powershell
 $env:PYTHONPATH = (Get-Location).Path
 .\mcp_daemon\venv\Scripts\python.exe test_actuator.py
 ```
 
-### 2. Inicialização do Servidor MCP (stdio)
+### 3. Iniciar o Servidor MCP (`stdio`)
 ```powershell
 $env:PYTHONPATH = (Get-Location).Path
 .\mcp_daemon\venv\Scripts\python.exe -m mcp_daemon.server
 ```
-
----
-
-## Integração no Antigravity
-
-A configuração já foi registrada em `C:\Users\Joao\.gemini\config\mcp_config.json` e espelhada em [antigravity_mcp_config.json](file:///c:/Users/Joao/Documents/antigravity/hopeful-hertz/antigravity_mcp_config.json).
-
-### Prompt de Teste End-to-End
-> *"Abra a calculadora do sistema, clique em '5', clique em '+', clique em '5', clique em '=' e valide o resultado visualmente."*
