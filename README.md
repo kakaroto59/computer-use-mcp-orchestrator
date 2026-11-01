@@ -10,8 +10,13 @@ Arquitetura de alto desempenho para automação de interface gráfica (*Computer
   - Captura de tela direta via `BitBlt` + `GetDIBits` com conversão BGRA $\to$ RGBA otimizada em modo `--release`.
   - **GIL-Free Execution**: Liberação do Global Interpreter Lock do Python (`py.allow_threads`) durante a captura de tela e codificação de imagem.
   - **Prioridade de Tempo Real (`HIGH_PRIORITY_CLASS`)**: Elevação automática da prioridade do processo no agendador do Windows via `SetPriorityClass`.
-  - **Bypass de Isolamento de Desktop (`ensure_input_desktop`)**: Vinculação automática do thread ao desktop interativo ativo (`OpenInputDesktop` + `SetThreadDesktop`) e consciência nativa de DPI (`SetProcessDPIAware()`), garantindo mapeamento físico $1:1$ (`1920x1080`).
-  - **Focus Guard (`focus_guard`)**: Acoplamento de fila de input Win32 (`AttachThreadInput` + `SetForegroundWindow` + `BringWindowToTop` + `SetFocus`) imediatamente antes de eventos de mouse e teclado para evitar perda silenciosa de foco.
+  - **Bypass de Isolamento de Desktop (`ensure_input_desktop`)**: Vinculação automática do thread ao desktop interativo ativo (`OpenInputDesktop` + `SetThreadDesktop`) e consciência nativa de DPI Per-Monitor V2 (`DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2`), garantindo mapeamento físico $1:1$ mesmo sob escala de 125%/150%.
+  - **Focus Guard (`focus_guard`)**: Acoplamento de fila de input Win32 (`AttachThreadInput` + `SetForegroundWindow`) imediatamente antes de eventos de mouse e teclado para evitar perda silenciosa de foco.
+  - **Resiliência Avançada (`v0.4.0`)**:
+    - **Bloqueio de Interferência Física (`InputBlockGuard`)**: Guard RAII com `BlockInput(true)` / `BlockInput(false)` durante a injeção de eventos `enigo`.
+    - **Mapeamento Multi-Monitor (`VirtualScreen`)**: Captura e deslocamento de coordenadas via `SM_XVIRTUALSCREEN`, `SM_YVIRTUALSCREEN`, `SM_CXVIRTUALSCREEN` e `SM_CYVIRTUALSCREEN`.
+    - **Prevenção de Suspensão**: `SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED)`.
+    - **Focus Assist & Cooldown de CPU (`1.2s`)**: Supressão automática de notificações toast via registro (`winreg` + `atexit`) e limitador de taxa assíncrono (`MIN_TOOL_COOLDOWN = 1.2s`) em todas as ferramentas MCP.
 
 - **Daemon MCP Otimizado para LLMs (`mcp_daemon`)**:
   - **Coordenadas Relativas Normalizadas (`[0.0, 1.0]`)**: Elimina erros de escala de resolução exigindo `x_rel` e `y_rel` no intervalo estrito `[0.0, 1.0]`, convertidos dinamicamente para pixels físicos da tela ativa.
