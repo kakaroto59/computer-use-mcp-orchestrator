@@ -1,3 +1,5 @@
+import asyncio
+import atexit
 import base64
 from io import BytesIO
 import json
@@ -5,6 +7,7 @@ import logging
 import sys
 import time
 from typing import Annotated, Literal
+import winreg
 
 import numpy as np
 from mcp.server.mcpserver import MCPServer
@@ -20,6 +23,40 @@ logging.basicConfig(
 )
 logger = logging.getLogger("mcp_daemon")
 
+
+def set_focus_assist(enable: bool) -> None:
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Notifications\Settings",
+            0,
+            winreg.KEY_SET_VALUE,
+        )
+        value = 2 if enable else 0  # 2 = Oculta tudo (Alarmes apenas)
+        winreg.SetValueEx(
+            key, "NOC_GLOBAL_SETTING_TOASTS_LEVEL", 0, winreg.REG_DWORD, value
+        )
+        winreg.CloseKey(key)
+    except Exception:
+        pass
+
+
+set_focus_assist(True)
+atexit.register(lambda: set_focus_assist(False))
+
+MIN_TOOL_COOLDOWN = 1.2
+last_tool_execution = 0.0
+
+
+async def apply_cpu_cooldown() -> None:
+    global last_tool_execution
+    now = time.time()
+    elapsed = now - last_tool_execution
+    if elapsed < MIN_TOOL_COOLDOWN:
+        await asyncio.sleep(MIN_TOOL_COOLDOWN - elapsed)
+    last_tool_execution = time.time()
+
+
 LATENCY_CAPTURE_MS = 100
 LATENCY_TYPE_MS = 200
 LATENCY_KEY_MS = 300
@@ -32,7 +69,7 @@ _last_screen_dims: np.ndarray | None = None
 server = MCPServer(
     name="ComputerUseActuator",
     instructions="OS automation via normalized coordinates [0.0, 1.0].",
-    version="0.3.0",
+    version="0.4.0",
 )
 
 
@@ -76,14 +113,14 @@ def _norm_to_pixel(x_rel: float, y_rel: float) -> tuple[int, int, int, int]:
     return int(px[0]), int(px[1]), w, h
 
 
-def _get_feedback_payload(
+async def _get_feedback_payload(
     action: str,
     extra_meta: dict,
     delay_ms: int = LATENCY_CLICK_MS,
     quality: int = 75,
 ) -> list:
     if delay_ms > 0:
-        time.sleep(delay_ms / 1000.0)
+        await asyncio.sleep(delay_ms / 1000.0)
 
     try:
         width, height = _get_screen_dims()
@@ -116,15 +153,16 @@ def _get_feedback_payload(
 
 
 @server.tool()
-def capture_screen(
+async def capture_screen(
     format: Literal["jpeg", "png"] = "jpeg",
     quality: int = 75,
     delay_ms: int = LATENCY_CAPTURE_MS,
 ) -> list:
     """Capture screen"""
+    await apply_cpu_cooldown()
     logger.info(f"Tool call: capture_screen(format={format}, quality={quality})")
     if delay_ms > 0:
-        time.sleep(delay_ms / 1000.0)
+        await asyncio.sleep(delay_ms / 1000.0)
 
     try:
         width, height = _get_screen_dims()
@@ -153,18 +191,19 @@ def capture_screen(
 
 
 @server.tool()
-def execute_click(
+async def execute_click(
     x_rel: Annotated[float, Field(description="X [0.0, 1.0]")],
     y_rel: Annotated[float, Field(description="Y [0.0, 1.0]")],
     button: Literal["left", "right", "middle"] = "left",
     delay_ms: int = LATENCY_CLICK_MS,
 ) -> list:
     """Click at relative coordinates [0.0, 1.0]"""
+    await apply_cpu_cooldown()
     logger.info(f"Tool call: execute_click(x_rel={x_rel}, y_rel={y_rel}, button={button})")
     try:
         x, y, _, _ = _norm_to_pixel(x_rel, y_rel)
         actuator_core.click_at(x, y, button)
-        return _get_feedback_payload(
+        return await _get_feedback_payload(
             action="execute_click",
             extra_meta={
                 "clicked_rel": [x_rel, y_rel],
@@ -197,12 +236,13 @@ def execute_click(
 
 
 @server.tool()
-def execute_type(
+async def execute_type(
     text: str,
     press_enter: bool = False,
     delay_ms: int = LATENCY_TYPE_MS,
 ) -> list:
     """Type string"""
+    await apply_cpu_cooldown()
     logger.info(f"Tool call: execute_type(len={len(text)}, press_enter={press_enter})")
     try:
         actuator_core.type_text(text)
@@ -212,7 +252,7 @@ def execute_type(
         else:
             effective_delay = delay_ms
 
-        return _get_feedback_payload(
+        return await _get_feedback_payload(
             action="execute_type",
             extra_meta={"typed_length": len(text), "press_enter": press_enter},
             delay_ms=effective_delay,
@@ -231,15 +271,16 @@ def execute_type(
 
 
 @server.tool()
-def execute_press_key(
+async def execute_press_key(
     key: str,
     delay_ms: int = LATENCY_KEY_MS,
 ) -> list:
     """Press single key"""
+    await apply_cpu_cooldown()
     logger.info(f"Tool call: execute_press_key(key={key})")
     try:
         actuator_core.press_key(key)
-        return _get_feedback_payload(
+        return await _get_feedback_payload(
             action="execute_press_key",
             extra_meta={"pressed_key": key},
             delay_ms=delay_ms,
@@ -258,15 +299,16 @@ def execute_press_key(
 
 
 @server.tool()
-def execute_hotkey(
+async def execute_hotkey(
     keys: list[str],
     delay_ms: int = LATENCY_HOTKEY_MS,
 ) -> list:
     """Press key combination"""
+    await apply_cpu_cooldown()
     logger.info(f"Tool call: execute_hotkey(keys={keys})")
     try:
         actuator_core.hotkey(keys)
-        return _get_feedback_payload(
+        return await _get_feedback_payload(
             action="execute_hotkey",
             extra_meta={"hotkey": keys},
             delay_ms=delay_ms,
@@ -285,16 +327,17 @@ def execute_hotkey(
 
 
 @server.tool()
-def execute_scroll(
+async def execute_scroll(
     direction: Literal["up", "down", "left", "right"] = "down",
     amount: int = 3,
     delay_ms: int = LATENCY_SCROLL_MS,
 ) -> list:
     """Scroll mouse wheel"""
+    await apply_cpu_cooldown()
     logger.info(f"Tool call: execute_scroll(direction={direction}, amount={amount})")
     try:
         actuator_core.scroll(direction, amount)
-        return _get_feedback_payload(
+        return await _get_feedback_payload(
             action="execute_scroll",
             extra_meta={"direction": direction, "amount": amount},
             delay_ms=delay_ms,
@@ -313,11 +356,12 @@ def execute_scroll(
 
 
 @server.tool()
-def execute_move(
+async def execute_move(
     x_rel: Annotated[float, Field(description="X [0.0, 1.0]")],
     y_rel: Annotated[float, Field(description="Y [0.0, 1.0]")],
 ) -> list:
     """Move cursor to relative coordinates [0.0, 1.0]"""
+    await apply_cpu_cooldown()
     logger.info(f"Tool call: execute_move(x_rel={x_rel}, y_rel={y_rel})")
     try:
         x, y, _, _ = _norm_to_pixel(x_rel, y_rel)
@@ -360,7 +404,7 @@ def execute_move(
 
 
 def main():
-    logger.info("Starting Computer Use MCP Server v0.3.0 on stdio transport...")
+    logger.info("Starting Computer Use MCP Server v0.4.0 on stdio transport...")
     server.run(transport="stdio")
 
 

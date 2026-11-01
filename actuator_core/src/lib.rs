@@ -11,21 +11,45 @@ use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
     ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, RGBQUAD, SRCCOPY,
 };
+use windows::Win32::System::Power::{
+    SetThreadExecutionState, ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED,
+};
 use windows::Win32::System::Threading::{
     AttachThreadInput, GetCurrentProcess, GetCurrentThreadId, SetPriorityClass, HIGH_PRIORITY_CLASS,
 };
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::BlockInput;
 use windows::Win32::UI::WindowsAndMessaging::{
     GetAncestor, GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId,
-    SetForegroundWindow, WindowFromPoint, GA_ROOT, SM_CXSCREEN, SM_CYSCREEN,
+    SetForegroundWindow, WindowFromPoint, GA_ROOT, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 
 #[link(name = "user32")]
 extern "system" {
     fn OpenInputDesktop(dwflags: u32, finherit: i32, dwdesiredaccess: u32) -> isize;
     fn SetThreadDesktop(hdesktop: isize) -> i32;
+}
+
+struct InputBlockGuard;
+
+impl InputBlockGuard {
+    fn acquire() -> Self {
+        unsafe {
+            let _ = BlockInput(true);
+        }
+        Self
+    }
+}
+
+impl Drop for InputBlockGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = BlockInput(false);
+        }
+    }
 }
 
 pub fn ensure_input_desktop() {
@@ -96,8 +120,10 @@ fn parse_key(key_name: &str) -> Result<Key, String> {
 fn capture_screen_gdi() -> Result<image::RgbaImage, String> {
     ensure_input_desktop();
     unsafe {
-        let width = GetSystemMetrics(SM_CXSCREEN);
-        let height = GetSystemMetrics(SM_CYSCREEN);
+        let origin_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        let origin_y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        let width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        let height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
         let hdc_screen = GetDC(None);
         if hdc_screen.is_invalid() {
@@ -119,7 +145,17 @@ fn capture_screen_gdi() -> Result<image::RgbaImage, String> {
 
         let old_bitmap = SelectObject(hdc_mem, h_bitmap.into());
 
-        let blt_res = BitBlt(hdc_mem, 0, 0, width, height, Some(hdc_screen), 0, 0, SRCCOPY);
+        let blt_res = BitBlt(
+            hdc_mem,
+            0,
+            0,
+            width,
+            height,
+            Some(hdc_screen),
+            origin_x,
+            origin_y,
+            SRCCOPY,
+        );
         if let Err(e) = blt_res {
             SelectObject(hdc_mem, old_bitmap);
             let _ = DeleteObject(h_bitmap.into());
@@ -212,8 +248,8 @@ fn get_screenshot_raw(py: Python<'_>, format: &str, quality: u8) -> PyResult<Vec
 fn get_screen_dimensions() -> PyResult<(u32, u32)> {
     ensure_input_desktop();
     unsafe {
-        let width = GetSystemMetrics(SM_CXSCREEN);
-        let height = GetSystemMetrics(SM_CYSCREEN);
+        let width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        let height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
         Ok((width as u32, height as u32))
     }
 }
@@ -222,14 +258,21 @@ fn get_screen_dimensions() -> PyResult<(u32, u32)> {
 #[pyo3(signature = (x, y, button = "left"))]
 fn click_at(x: i32, y: i32, button: &str) -> PyResult<()> {
     ensure_input_desktop();
-    let target_hwnd = resolve_target_hwnd_at(x, y);
+    let (abs_x, abs_y) = unsafe {
+        (
+            x + GetSystemMetrics(SM_XVIRTUALSCREEN),
+            y + GetSystemMetrics(SM_YVIRTUALSCREEN),
+        )
+    };
+    let target_hwnd = resolve_target_hwnd_at(abs_x, abs_y);
     focus_guard(target_hwnd);
 
+    let _block_guard = InputBlockGuard::acquire();
     let mut enigo = Enigo::new(&Settings::default())
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to init Enigo: {:?}", e)))?;
 
     enigo
-        .move_mouse(x, y, Coordinate::Abs)
+        .move_mouse(abs_x, abs_y, Coordinate::Abs)
         .map_err(|e| PyRuntimeError::new_err(format!("Mouse move error: {:?}", e)))?;
 
     let btn = match button.to_lowercase().as_str() {
@@ -248,11 +291,18 @@ fn click_at(x: i32, y: i32, button: &str) -> PyResult<()> {
 #[pyfunction]
 fn mouse_move(x: i32, y: i32) -> PyResult<()> {
     ensure_input_desktop();
+    let (abs_x, abs_y) = unsafe {
+        (
+            x + GetSystemMetrics(SM_XVIRTUALSCREEN),
+            y + GetSystemMetrics(SM_YVIRTUALSCREEN),
+        )
+    };
+    let _block_guard = InputBlockGuard::acquire();
     let mut enigo = Enigo::new(&Settings::default())
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to init Enigo: {:?}", e)))?;
 
     enigo
-        .move_mouse(x, y, Coordinate::Abs)
+        .move_mouse(abs_x, abs_y, Coordinate::Abs)
         .map_err(|e| PyRuntimeError::new_err(format!("Mouse move error: {:?}", e)))?;
 
     Ok(())
@@ -264,6 +314,7 @@ fn type_text(text: &str) -> PyResult<()> {
     let target_hwnd = unsafe { GetForegroundWindow() };
     focus_guard(target_hwnd);
 
+    let _block_guard = InputBlockGuard::acquire();
     let mut enigo = Enigo::new(&Settings::default())
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to init Enigo: {:?}", e)))?;
 
@@ -278,6 +329,7 @@ fn type_text(text: &str) -> PyResult<()> {
 #[pyo3(signature = (direction = "down", amount = 3))]
 fn scroll(direction: &str, amount: i32) -> PyResult<()> {
     ensure_input_desktop();
+    let _block_guard = InputBlockGuard::acquire();
     let mut enigo = Enigo::new(&Settings::default())
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to init Enigo: {:?}", e)))?;
 
@@ -301,6 +353,7 @@ fn press_key(key_name: &str) -> PyResult<()> {
     let target_hwnd = unsafe { GetForegroundWindow() };
     focus_guard(target_hwnd);
 
+    let _block_guard = InputBlockGuard::acquire();
     let mut enigo = Enigo::new(&Settings::default())
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to init Enigo: {:?}", e)))?;
 
@@ -319,6 +372,7 @@ fn hotkey(keys: Vec<String>) -> PyResult<()> {
     let target_hwnd = unsafe { GetForegroundWindow() };
     focus_guard(target_hwnd);
 
+    let _block_guard = InputBlockGuard::acquire();
     let mut enigo = Enigo::new(&Settings::default())
         .map_err(|e| PyRuntimeError::new_err(format!("Failed to init Enigo: {:?}", e)))?;
 
@@ -347,6 +401,7 @@ fn actuator_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     unsafe {
         let _ = SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
     }
     m.add_function(wrap_pyfunction!(get_screenshot, m)?)?;
     m.add_function(wrap_pyfunction!(get_screenshot_raw, m)?)?;

@@ -11,9 +11,11 @@ from mcp_daemon.server import (
     LATENCY_CLICK_MS,
     LATENCY_HOTKEY_MS,
     LATENCY_TYPE_MS,
+    MIN_TOOL_COOLDOWN,
     _norm_to_pixel,
     process_screenshot_for_llm,
     server,
+    set_focus_assist,
 )
 
 
@@ -81,8 +83,12 @@ async def test_mcp_server_tools():
     assert "x_rel" in click_props and "y_rel" in click_props
     print("Verified minified Pydantic schema for execute_click.")
 
-    # Verify reference latencies
+    # Verify reference latencies and CPU cooldown
     assert LATENCY_TYPE_MS < LATENCY_CLICK_MS < LATENCY_HOTKEY_MS
+    assert MIN_TOOL_COOLDOWN == 1.2
+    set_focus_assist(True)
+    set_focus_assist(False)
+    print(f"Verified MIN_TOOL_COOLDOWN={MIN_TOOL_COOLDOWN}s and Focus Assist registry toggle.")
 
     # Test capture_screen tool
     cap_res = await server.call_tool("capture_screen", {"quality": 60, "delay_ms": 0})
