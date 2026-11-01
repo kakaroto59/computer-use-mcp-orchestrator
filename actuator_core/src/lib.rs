@@ -14,6 +14,9 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::Threading::{
     AttachThreadInput, GetCurrentProcess, GetCurrentThreadId, SetPriorityClass, HIGH_PRIORITY_CLASS,
 };
+use windows::Win32::UI::HiDpi::{
+    SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetAncestor, GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId,
     SetForegroundWindow, WindowFromPoint, GA_ROOT, SM_CXSCREEN, SM_CYSCREEN,
@@ -23,12 +26,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 extern "system" {
     fn OpenInputDesktop(dwflags: u32, finherit: i32, dwdesiredaccess: u32) -> isize;
     fn SetThreadDesktop(hdesktop: isize) -> i32;
-    fn SetProcessDPIAware() -> i32;
 }
 
 pub fn ensure_input_desktop() {
     unsafe {
-        SetProcessDPIAware();
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let hdesk = OpenInputDesktop(0, 0, 0x01FF);
         if hdesk != 0 {
             SetThreadDesktop(hdesk);
@@ -344,6 +346,7 @@ fn hotkey(keys: Vec<String>) -> PyResult<()> {
 fn actuator_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     unsafe {
         let _ = SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
     m.add_function(wrap_pyfunction!(get_screenshot, m)?)?;
     m.add_function(wrap_pyfunction!(get_screenshot_raw, m)?)?;

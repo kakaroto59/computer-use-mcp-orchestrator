@@ -1,5 +1,4 @@
 import base64
-import ctypes
 from io import BytesIO
 import json
 import logging
@@ -13,11 +12,6 @@ from mcp.types import ImageContent, TextContent
 from PIL import Image
 from pydantic import Field
 import actuator_core
-
-try:
-    ctypes.windll.user32.SetProcessDPIAware()
-except Exception:
-    pass
 
 logging.basicConfig(
     level=logging.INFO,
