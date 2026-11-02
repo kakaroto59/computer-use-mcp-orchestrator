@@ -403,6 +403,31 @@ async def execute_move(
         ]
 
 
+@server.tool()
+async def manage_window(
+    title_substring: Annotated[
+        str,
+        Field(
+            description="Specific active tab or document title substring (NEVER use generic browser names like 'Chrome')"
+        ),
+    ],
+) -> str:
+    """
+    Brings a specific window to the foreground and maximizes it based on a substring of its title.
+    Use this BEFORE taking a screenshot if the target application is not focused or is covered by another window.
+    STRICT RULE: NEVER pass generic browser names like "Chrome" when targeting a web page; ALWAYS pass the specific active tab or document title (e.g., manage_window("Automação"), manage_window("PNetLab"), manage_window("Bloco de Notas")).
+    """
+    await apply_cpu_cooldown()
+    logger.info(f"Tool call: manage_window(title_substring={title_substring!r})")
+    try:
+        found = actuator_core.focus_window(title_substring)
+        if found:
+            return f"Window containing '{title_substring}' brought to foreground and maximized."
+        return f"No visible window matching '{title_substring}' was found."
+    except Exception as e:
+        return f"Error managing window: {str(e)}"
+
+
 def main():
     logger.info("Starting Computer Use MCP Server v0.4.0 on stdio transport...")
     server.run(transport="stdio")

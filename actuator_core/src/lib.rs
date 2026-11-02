@@ -1,12 +1,15 @@
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
+use std::ffi::OsString;
 use std::io::Cursor;
+use std::os::windows::ffi::OsStringExt;
 use base64::prelude::*;
 use enigo::{
     Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings
 };
 use image::ImageFormat;
-use windows::Win32::Foundation::{HWND, POINT};
+use windows::core::BOOL;
+use windows::Win32::Foundation::{HWND, LPARAM, POINT};
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
     ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, RGBQUAD, SRCCOPY,
@@ -22,9 +25,10 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::BlockInput;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetAncestor, GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId,
-    SetForegroundWindow, WindowFromPoint, GA_ROOT, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    EnumWindows, GetAncestor, GetForegroundWindow, GetSystemMetrics, GetWindowTextLengthW,
+    GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow, ShowWindow,
+    WindowFromPoint, GA_ROOT, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN, SW_MAXIMIZE, SW_RESTORE,
 };
 
 #[link(name = "user32")]
@@ -409,6 +413,53 @@ fn hotkey(keys: Vec<String>) -> PyResult<()> {
     Ok(())
 }
 
+#[pyfunction]
+fn focus_window(target_title: String) -> PyResult<bool> {
+    ensure_input_desktop();
+
+    struct SearchState {
+        target: String,
+        found: bool,
+    }
+
+    unsafe extern "system" fn enum_window_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let state = &mut *(lparam.0 as *mut SearchState);
+
+        if IsWindowVisible(hwnd).as_bool() {
+            let length = GetWindowTextLengthW(hwnd);
+            if length > 0 {
+                let mut buffer: Vec<u16> = vec![0; (length + 1) as usize];
+                GetWindowTextW(hwnd, &mut buffer);
+
+                let title = OsString::from_wide(&buffer[..length as usize])
+                    .into_string()
+                    .unwrap_or_default();
+
+                if title.to_lowercase().contains(&state.target) {
+                    let _ = ShowWindow(hwnd, SW_RESTORE);
+                    let _ = ShowWindow(hwnd, SW_MAXIMIZE);
+                    focus_guard(hwnd);
+                    let _ = SetForegroundWindow(hwnd);
+                    state.found = true;
+                    return BOOL(0);
+                }
+            }
+        }
+        BOOL(1)
+    }
+
+    let mut state = SearchState {
+        target: target_title.to_lowercase(),
+        found: false,
+    };
+
+    unsafe {
+        let lparam = LPARAM(&mut state as *mut SearchState as isize);
+        let _ = EnumWindows(Some(enum_window_callback), lparam);
+    }
+    Ok(state.found)
+}
+
 #[pymodule]
 fn actuator_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     unsafe {
@@ -425,5 +476,6 @@ fn actuator_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(scroll, m)?)?;
     m.add_function(wrap_pyfunction!(press_key, m)?)?;
     m.add_function(wrap_pyfunction!(hotkey, m)?)?;
+    m.add_function(wrap_pyfunction!(focus_window, m)?)?;
     Ok(())
 }

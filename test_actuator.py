@@ -73,6 +73,7 @@ async def test_mcp_server_tools():
         "execute_hotkey",
         "execute_scroll",
         "execute_move",
+        "manage_window",
     ]
     for exp in expected_tools:
         assert exp in tool_map, f"Missing tool: {exp}"
