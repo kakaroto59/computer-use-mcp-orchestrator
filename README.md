@@ -68,6 +68,7 @@ Todas as ferramentas de atuação executam o ciclo de feedback visual fechado (a
 5. **`execute_hotkey`**: Dispara atalho combinado (ex.: `["win", "r"]`, `["ctrl", "c"]`, `["alt", "f4"]`).
 6. **`execute_scroll`**: Rola a roda do mouse (`up`, `down`, `left`, `right`).
 7. **`execute_move`**: Move o cursor para `(x_rel, y_rel)` $\in [0.0, 1.0]$ sem clicar.
+8. **`manage_window`**: Traz uma janela específica para o topo do Z-Order e a maximiza via API Win32 (`EnumWindows` + `SW_MAXIMIZE` + `SetForegroundWindow`) com base no título específico da aba/documento ativo.
 
 ---
 

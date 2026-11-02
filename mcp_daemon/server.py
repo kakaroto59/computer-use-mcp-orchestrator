@@ -69,7 +69,7 @@ _last_screen_dims: np.ndarray | None = None
 server = MCPServer(
     name="ComputerUseActuator",
     instructions="OS automation via normalized coordinates [0.0, 1.0].",
-    version="0.4.0",
+    version="0.4.1",
 )
 
 
